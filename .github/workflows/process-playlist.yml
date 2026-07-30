@@ -1,0 +1,59 @@
+name: Process YouTube Playlist
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without publishing or saving state"
+        type: boolean
+        default: false
+  schedule:
+    # Daily at 13:00 UTC -- adjust to match how often videos get added.
+    - cron: "0 13 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  # Queue overlapping manual + scheduled runs instead of racing to push
+  # the state file.
+  group: process-playlist
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run summarizer
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          PLAYLIST_ID: ${{ vars.PLAYLIST_ID }}
+          SUMMARY_PROVIDER: ${{ vars.SUMMARY_PROVIDER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+          VENICE_MODEL: ${{ vars.VENICE_MODEL }}
+          WEBSHARE_PROXY_USERNAME: ${{ secrets.WEBSHARE_PROXY_USERNAME }}
+          WEBSHARE_PROXY_PASSWORD: ${{ secrets.WEBSHARE_PROXY_PASSWORD }}
+          WEBSITE_API_URL: ${{ vars.WEBSITE_API_URL }}
+          WEBSITE_API_KEY: ${{ secrets.WEBSITE_API_KEY }}
+          MAX_VIDEOS_PER_RUN: ${{ vars.MAX_VIDEOS_PER_RUN }}
+        run: python -m app.main ${{ (github.event.inputs.dry_run == 'true') && '--dry-run' || '' }}
+
+      - name: Commit updated state
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "chore: update processed videos state [skip ci]"
+          file_pattern: "data/processed_videos.json"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "41898282+github-actions[bot]@users.noreply.github.com"

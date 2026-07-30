@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# NOTE: data/processed_videos.json is intentionally NOT ignored.
+# It is committed state tracking which playlist videos have already
+# been summarized/published — the GitHub Actions workflow depends on
+# it persisting across runs.
