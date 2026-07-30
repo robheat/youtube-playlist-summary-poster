@@ -1,7 +1,7 @@
 """Fetches a YouTube video's transcript as plain text.
 
-Only used by the Venice provider -- the Gemini provider passes the video
-URL directly to Gemini and never needs a transcript.
+Used by both summary providers (see app/summarize/gemini.py's docstring
+for why Gemini also went this route rather than native video ingestion).
 
 Known risk: YouTube aggressively blocks requests from known cloud/CI IP
 ranges, including GitHub Actions runners, sometimes on the very first

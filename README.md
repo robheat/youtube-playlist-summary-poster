@@ -12,11 +12,16 @@ schedule via GitHub Actions.
   `app/config.py`'s `SITE_PROFILES`:
   - `cryptocatalyst-news` (playlist `PLLuz1PRurl7k`)
   - `ainformed-dev` (playlist `PLTVCsU2gFTts`)
-- **Gemini path**: the video's YouTube URL is passed directly to the
-  Gemini API, which watches/understands the video itself. No transcript
-  fetch is involved. Requires the video to be public.
-- **Venice path**: a transcript is fetched via `youtube-transcript-api`
-  and sent as plain text to Venice's chat completions endpoint.
+- **Both providers are transcript-based**: a transcript is fetched via
+  `youtube-transcript-api` (`app/summarize/transcript.py`) and sent as
+  plain text to either the Gemini API or Venice's chat completions
+  endpoint. Gemini originally ingested the YouTube URL natively (no
+  transcript), but that was abandoned after live testing -- see
+  `app/summarize/gemini.py`'s docstring for the full story (short version:
+  the model verified during planning, `gemini-2.5-flash`, is no longer
+  available to new API keys, and the current model family rejects the
+  video part with an opaque 400 for reasons that didn't resolve after
+  ruling out several hypotheses against the SDK source directly).
 - Either way, the model is asked to return a JSON article (title,
   summary, body, category constrained to the target site's own category
   list, tags) -- see `app/summarize/article_json.py`.
@@ -126,16 +131,15 @@ line in
 [`.github/workflows/process-playlist.yml`](.github/workflows/process-playlist.yml)
 to match how often you add videos.
 
-## Transcript IP blocking (Venice path only)
+## Transcript IP blocking (both providers)
 
 YouTube blocks known cloud/datacenter IP ranges -- including GitHub
 Actions runners -- from fetching transcripts, sometimes immediately. If
-`app/summarize/venice.py` starts failing with `TranscriptError`
-mentioning `IpBlocked` or `RequestBlocked`, sign up for a
+you see a `TranscriptError` mentioning `IpBlocked` or `RequestBlocked`
+(from either `app/summarize/gemini.py` or `app/summarize/venice.py` --
+both fetch a transcript now), sign up for a
 [Webshare](https://www.webshare.io/) rotating-residential proxy plan and
-set `WEBSHARE_PROXY_USERNAME`/`WEBSHARE_PROXY_PASSWORD`. This only
-affects the Venice path -- Gemini ingests the YouTube URL directly and
-never fetches a transcript.
+set `WEBSHARE_PROXY_USERNAME`/`WEBSHARE_PROXY_PASSWORD`.
 
 ## Permanently-skipping a video
 

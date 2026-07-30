@@ -1,4 +1,10 @@
-"""Tests for app.summarize.gemini.GeminiProvider."""
+"""Tests for app.summarize.gemini.GeminiProvider.
+
+Gemini's native YouTube video-URL ingestion was tried and abandoned after
+live testing (see gemini.py's docstring) -- this provider is now
+transcript-based, structurally mirroring VeniceProvider, just against the
+Gemini API instead.
+"""
 from __future__ import annotations
 
 import json
@@ -8,6 +14,7 @@ import pytest
 
 from app.summarize.base import ArticleContent, SummaryError
 from app.summarize.gemini import GeminiProvider
+from app.summarize.transcript import TranscriptError
 
 VALID_ARTICLE_JSON = json.dumps(
     {
@@ -25,7 +32,7 @@ class FakeGenerateContentResponse:
         self.text = text
 
 
-def _make_provider(response_text=VALID_ARTICLE_JSON, raise_exc=None):
+def _make_provider(response_text=VALID_ARTICLE_JSON, raise_exc=None, **kwargs):
     fake_client = MagicMock()
     if raise_exc:
         fake_client.models.generate_content.side_effect = raise_exc
@@ -35,14 +42,15 @@ def _make_provider(response_text=VALID_ARTICLE_JSON, raise_exc=None):
         )
 
     with patch("app.summarize.gemini.genai.Client", return_value=fake_client):
-        provider = GeminiProvider(api_key="fake-key", model="gemini-2.5-flash")
+        provider = GeminiProvider(api_key="fake-key", model="gemini-2.5-flash", **kwargs)
     return provider, fake_client
 
 
 def test_generate_article_returns_parsed_content(sample_video, sample_site_profile):
     provider, _ = _make_provider()
 
-    result = provider.generate_article(sample_video, sample_site_profile)
+    with patch("app.summarize.gemini.get_transcript", return_value="This is the transcript."):
+        result = provider.generate_article(sample_video, sample_site_profile)
 
     assert isinstance(result, ArticleContent)
     assert result.title == "A Great Video Title"
@@ -50,33 +58,24 @@ def test_generate_article_returns_parsed_content(sample_video, sample_site_profi
     assert result.tags == ["tag-one", "tag-two"]
 
 
-def test_generate_article_sends_model_and_watch_url(sample_video, sample_site_profile):
+def test_generate_article_sends_model_and_transcript(sample_video, sample_site_profile):
     provider, fake_client = _make_provider()
 
-    provider.generate_article(sample_video, sample_site_profile)
+    with patch(
+        "app.summarize.gemini.get_transcript", return_value="This is the transcript text."
+    ):
+        provider.generate_article(sample_video, sample_site_profile)
 
     _, kwargs = fake_client.models.generate_content.call_args
     assert kwargs["model"] == "gemini-2.5-flash"
-    # No response_mime_type="application/json" config -- confirmed via live
-    # testing that the API rejects that combined with YouTube video-URL
-    # ingestion. JSON-ness is enforced by the prompt + parse_article()
-    # instead, so this call must NOT pass a config kwarg at all.
-    assert "config" not in kwargs
-    contents = kwargs["contents"]
-    file_data_parts = [
-        part.file_data for part in contents if getattr(part, "file_data", None) is not None
-    ]
-    assert sample_video.watch_url in [fd.file_uri for fd in file_data_parts]
-    # mime_type is required -- FileData.mime_type is documented "Required"
-    # in the SDK, and omitting it produces a live 400 INVALID_ARGUMENT
-    # since a bare watch?v= URL has no extension for the SDK to guess from.
-    assert all(fd.mime_type for fd in file_data_parts)
+    assert "This is the transcript text." in kwargs["contents"][0]
 
 
 def test_generate_article_prompt_includes_site_categories(sample_video, sample_site_profile):
     provider, fake_client = _make_provider()
 
-    provider.generate_article(sample_video, sample_site_profile)
+    with patch("app.summarize.gemini.get_transcript", return_value="transcript"):
+        provider.generate_article(sample_video, sample_site_profile)
 
     _, kwargs = fake_client.models.generate_content.call_args
     prompt_text = kwargs["contents"][0]
@@ -84,22 +83,46 @@ def test_generate_article_prompt_includes_site_categories(sample_video, sample_s
         assert category in prompt_text
 
 
+def test_generate_article_truncates_long_transcript(sample_video, sample_site_profile):
+    provider, fake_client = _make_provider(max_transcript_chars=20)
+    long_transcript = "word " * 100
+
+    with patch("app.summarize.gemini.get_transcript", return_value=long_transcript):
+        provider.generate_article(sample_video, sample_site_profile)
+
+    _, kwargs = fake_client.models.generate_content.call_args
+    sent_prompt = kwargs["contents"][0]
+    transcript_in_prompt = sent_prompt.split("Transcript:\n", 1)[1]
+    assert len(transcript_in_prompt) <= 20
+
+
+def test_generate_article_wraps_transcript_error(sample_video, sample_site_profile):
+    provider, _ = _make_provider()
+
+    with patch("app.summarize.gemini.get_transcript", side_effect=TranscriptError("blocked")):
+        with pytest.raises(SummaryError, match="blocked"):
+            provider.generate_article(sample_video, sample_site_profile)
+
+
 def test_generate_article_raises_on_empty_response(sample_video, sample_site_profile):
     provider, _ = _make_provider(response_text="   ")
 
-    with pytest.raises(SummaryError, match="empty"):
-        provider.generate_article(sample_video, sample_site_profile)
+    with patch("app.summarize.gemini.get_transcript", return_value="transcript"):
+        with pytest.raises(SummaryError, match="empty"):
+            provider.generate_article(sample_video, sample_site_profile)
 
 
 def test_generate_article_raises_on_malformed_json(sample_video, sample_site_profile):
     provider, _ = _make_provider(response_text="not json at all")
 
-    with pytest.raises(SummaryError):
-        provider.generate_article(sample_video, sample_site_profile)
+    with patch("app.summarize.gemini.get_transcript", return_value="transcript"):
+        with pytest.raises(SummaryError):
+            provider.generate_article(sample_video, sample_site_profile)
 
 
 def test_generate_article_wraps_client_exception(sample_video, sample_site_profile):
     provider, _ = _make_provider(raise_exc=RuntimeError("network down"))
 
-    with pytest.raises(SummaryError, match="network down"):
-        provider.generate_article(sample_video, sample_site_profile)
+    with patch("app.summarize.gemini.get_transcript", return_value="transcript"):
+        with pytest.raises(SummaryError, match="network down"):
+            provider.generate_article(sample_video, sample_site_profile)

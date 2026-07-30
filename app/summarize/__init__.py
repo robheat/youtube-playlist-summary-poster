@@ -1,13 +1,15 @@
 """Pluggable video summarization providers.
 
-Two backends are available, selected via the SUMMARY_PROVIDER config value:
+Two backends are available, selected via the SUMMARY_PROVIDER config value.
+Both fetch a transcript via youtube-transcript-api (transcript.py) and
+send it as plain text to their respective LLM -- Gemini's native
+YouTube-URL video ingestion was tried and abandoned (see gemini.py's
+docstring for why), so there is no meaningful difference between the two
+providers beyond which LLM writes the article. Both are therefore subject
+to the transcript IP-blocking risk described in transcript.py.
 
-- gemini: passes the YouTube URL directly to the Gemini API, which fetches
-  and understands the video itself. No transcript fetch involved.
-- venice: fetches a transcript via youtube-transcript-api and sends it as
-  plain text to Venice's chat completions endpoint. Venice's own video_url
-  input type exists but YouTube-link support is inconsistent across
-  models, so it is not relied on here.
+- gemini: sends the transcript to the Gemini API.
+- venice: sends the transcript to Venice's chat completions endpoint.
 """
 from __future__ import annotations
 
@@ -25,7 +27,12 @@ def get_provider(config: Config) -> SummaryProvider:
     for missing keys happens here.
     """
     if config.summary_provider == "gemini":
-        return GeminiProvider(api_key=config.gemini_api_key, model=config.gemini_model)
+        return GeminiProvider(
+            api_key=config.gemini_api_key,
+            model=config.gemini_model,
+            proxy_username=config.webshare_proxy_username,
+            proxy_password=config.webshare_proxy_password,
+        )
     if config.summary_provider == "venice":
         return VeniceProvider(
             api_key=config.venice_api_key,
