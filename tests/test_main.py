@@ -23,7 +23,7 @@ def _make_config(tmp_path, site_profile, **overrides) -> Config:
         site_profile=site_profile,
         summary_provider="gemini",
         gemini_api_key="gemini-key",
-        gemini_model="gemini-2.5-flash",
+        gemini_model="gemini-3.6-flash",
         venice_api_key=None,
         venice_model="mistral-small-3-2-24b-instruct",
         webshare_proxy_username=None,

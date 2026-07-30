@@ -42,7 +42,7 @@ def _make_provider(response_text=VALID_ARTICLE_JSON, raise_exc=None, **kwargs):
         )
 
     with patch("app.summarize.gemini.genai.Client", return_value=fake_client):
-        provider = GeminiProvider(api_key="fake-key", model="gemini-2.5-flash", **kwargs)
+        provider = GeminiProvider(api_key="fake-key", model="gemini-3.6-flash", **kwargs)
     return provider, fake_client
 
 
@@ -67,7 +67,7 @@ def test_generate_article_sends_model_and_transcript(sample_video, sample_site_p
         provider.generate_article(sample_video, sample_site_profile)
 
     _, kwargs = fake_client.models.generate_content.call_args
-    assert kwargs["model"] == "gemini-2.5-flash"
+    assert kwargs["model"] == "gemini-3.6-flash"
     assert "This is the transcript text." in kwargs["contents"][0]
 
 

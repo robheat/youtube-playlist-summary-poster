@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 DEFAULT_VENICE_MODEL = "mistral-small-3-2-24b-instruct"
 DEFAULT_MAX_VIDEOS_PER_RUN = 5
 

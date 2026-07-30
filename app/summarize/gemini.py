@@ -24,7 +24,7 @@ from app.summarize.base import ArticleContent, SummaryError, SummaryProvider
 from app.summarize.transcript import TranscriptError, get_transcript
 from app.youtube import VideoMetadata
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.6-flash"
 
 PROMPT_PREFIX_TEMPLATE = (
     'Below is the transcript of a YouTube video titled "{title}". Write a '

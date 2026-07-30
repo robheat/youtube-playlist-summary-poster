@@ -98,7 +98,7 @@ Under **Settings → Secrets and variables → Actions** on this repo, add:
 | `YOUTUBE_API_KEY` | Secret | always | |
 | `SUMMARY_PROVIDER` | Variable | always | `gemini` or `venice` |
 | `GEMINI_API_KEY` | Secret | if provider=gemini | |
-| `GEMINI_MODEL` | Variable | optional | defaults to `gemini-2.5-flash` |
+| `GEMINI_MODEL` | Variable | optional | defaults to `gemini-3.6-flash` |
 | `VENICE_AI_API_KEY` | Secret | if provider=venice | |
 | `VENICE_MODEL` | Variable | optional | defaults to `mistral-small-3-2-24b-instruct` |
 | `WEBSHARE_PROXY_USERNAME` / `PASSWORD` | Secret | optional | see "Transcript IP blocking" below |

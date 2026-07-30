@@ -54,7 +54,7 @@ def test_valid_gemini_config_succeeds(monkeypatch):
     _set_env(monkeypatch, REQUIRED_GEMINI_ENV)
     cfg = load_config()
     assert cfg.summary_provider == "gemini"
-    assert cfg.gemini_model == "gemini-2.5-flash"
+    assert cfg.gemini_model == "gemini-3.6-flash"
     assert cfg.max_videos_per_run == 5
 
 
@@ -188,7 +188,7 @@ def test_empty_string_env_var_treated_as_unset(monkeypatch):
     # Simulates an unset GitHub Actions Variable, which interpolates as ""
     _set_env(monkeypatch, {**REQUIRED_GEMINI_ENV, "GEMINI_MODEL": ""})
     cfg = load_config()
-    assert cfg.gemini_model == "gemini-2.5-flash"
+    assert cfg.gemini_model == "gemini-3.6-flash"
 
 
 def test_reports_all_errors_at_once(monkeypatch):
