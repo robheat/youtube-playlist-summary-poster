@@ -50,14 +50,18 @@ def test_generate_article_returns_parsed_content(sample_video, sample_site_profi
     assert result.tags == ["tag-one", "tag-two"]
 
 
-def test_generate_article_sends_model_json_mode_and_watch_url(sample_video, sample_site_profile):
+def test_generate_article_sends_model_and_watch_url(sample_video, sample_site_profile):
     provider, fake_client = _make_provider()
 
     provider.generate_article(sample_video, sample_site_profile)
 
     _, kwargs = fake_client.models.generate_content.call_args
     assert kwargs["model"] == "gemini-2.5-flash"
-    assert kwargs["config"].response_mime_type == "application/json"
+    # No response_mime_type="application/json" config -- confirmed via live
+    # testing that the API rejects that combined with YouTube video-URL
+    # ingestion. JSON-ness is enforced by the prompt + parse_article()
+    # instead, so this call must NOT pass a config kwarg at all.
+    assert "config" not in kwargs
     contents = kwargs["contents"]
     file_uris = [
         part.file_data.file_uri

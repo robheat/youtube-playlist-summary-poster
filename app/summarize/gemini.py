@@ -31,6 +31,13 @@ class GeminiProvider(SummaryProvider):
     def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
         prompt = f"{PROMPT_PREFIX}\n\n{build_json_instructions(site_profile)}"
 
+        # No response_mime_type="application/json" here (unlike a typical
+        # structured-output call) -- confirmed via live testing that the
+        # API rejects that config with a generic 400 INVALID_ARGUMENT when
+        # combined with YouTube video-URL ingestion (a preview feature),
+        # on both gemini-3.5-flash and gemini-3.6-flash. The JSON
+        # instruction in the prompt plus article_json.extract_json()'s
+        # fence/commentary stripping does the same job without it.
         try:
             response = self._client.models.generate_content(
                 model=self._model,
@@ -38,7 +45,6 @@ class GeminiProvider(SummaryProvider):
                     prompt,
                     types.Part(file_data=types.FileData(file_uri=video.watch_url)),
                 ],
-                config=types.GenerateContentConfig(response_mime_type="application/json"),
             )
         except Exception as exc:
             raise SummaryError(
