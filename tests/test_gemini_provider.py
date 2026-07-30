@@ -63,12 +63,14 @@ def test_generate_article_sends_model_and_watch_url(sample_video, sample_site_pr
     # instead, so this call must NOT pass a config kwarg at all.
     assert "config" not in kwargs
     contents = kwargs["contents"]
-    file_uris = [
-        part.file_data.file_uri
-        for part in contents
-        if getattr(part, "file_data", None) is not None
+    file_data_parts = [
+        part.file_data for part in contents if getattr(part, "file_data", None) is not None
     ]
-    assert sample_video.watch_url in file_uris
+    assert sample_video.watch_url in [fd.file_uri for fd in file_data_parts]
+    # mime_type is required -- FileData.mime_type is documented "Required"
+    # in the SDK, and omitting it produces a live 400 INVALID_ARGUMENT
+    # since a bare watch?v= URL has no extension for the SDK to guess from.
+    assert all(fd.mime_type for fd in file_data_parts)
 
 
 def test_generate_article_prompt_includes_site_categories(sample_video, sample_site_profile):

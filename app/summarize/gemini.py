@@ -31,19 +31,32 @@ class GeminiProvider(SummaryProvider):
     def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
         prompt = f"{PROMPT_PREFIX}\n\n{build_json_instructions(site_profile)}"
 
-        # No response_mime_type="application/json" here (unlike a typical
-        # structured-output call) -- confirmed via live testing that the
-        # API rejects that config with a generic 400 INVALID_ARGUMENT when
-        # combined with YouTube video-URL ingestion (a preview feature),
-        # on both gemini-3.5-flash and gemini-3.6-flash. The JSON
+        # No response_mime_type="application/json" config here -- the JSON
         # instruction in the prompt plus article_json.extract_json()'s
-        # fence/commentary stripping does the same job without it.
+        # fence/commentary stripping does the same job without it, and it
+        # wasn't the cause of the 400 below anyway (removing it alone
+        # didn't fix it).
+        #
+        # mime_type is required despite the docs describing YouTube URLs as
+        # needing "no explicit mime_type": FileData.mime_type is documented
+        # "Required" in the SDK, and Part.from_uri() -- the SDK's own
+        # helper -- raises ValueError trying to mimetypes.guess_type() a
+        # bare watch?v= URL with no file extension. Confirmed via live
+        # testing that omitting it produces a generic 400 INVALID_ARGUMENT
+        # regardless of model (tried gemini-3.5-flash and gemini-3.6-flash).
+        # The actual value isn't validated against real content -- YouTube
+        # URLs get special-cased server-side -- so a generic video mime
+        # type satisfies the required field.
         try:
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=[
                     prompt,
-                    types.Part(file_data=types.FileData(file_uri=video.watch_url)),
+                    types.Part(
+                        file_data=types.FileData(
+                            file_uri=video.watch_url, mime_type="video/mp4"
+                        )
+                    ),
                 ],
             )
         except Exception as exc:
