@@ -1,4 +1,4 @@
-name: Process YouTube Playlist
+name: Process YouTube Playlists
 
 on:
   workflow_dispatch:
@@ -14,16 +14,24 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  # Queue overlapping manual + scheduled runs instead of racing to push
-  # the state file.
-  group: process-playlist
-  cancel-in-progress: false
-
 jobs:
   process:
+    strategy:
+      fail-fast: false
+      # Serializes the two legs. Each leg pushes to a DIFFERENT site repo
+      # (no race there), but both commit back to THIS repo's own state
+      # file afterward -- different files, same branch. Running them in
+      # parallel risks the second leg's state-file push getting rejected,
+      # which git-auto-commit-action doesn't retry. Serializing avoids
+      # that race entirely; doubling wall-clock time costs nothing here.
+      max-parallel: 1
+      matrix:
+        target_site: [cryptocatalyst-news, ainformed-dev]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: process-playlist-${{ matrix.target_site }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -37,23 +45,22 @@ jobs:
       - name: Run summarizer
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          PLAYLIST_ID: ${{ vars.PLAYLIST_ID }}
+          TARGET_SITE: ${{ matrix.target_site }}
           SUMMARY_PROVIDER: ${{ vars.SUMMARY_PROVIDER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-          VENICE_API_KEY: ${{ secrets.VENICE_API_KEY }}
+          VENICE_AI_API_KEY: ${{ secrets.VENICE_AI_API_KEY }}
           VENICE_MODEL: ${{ vars.VENICE_MODEL }}
           WEBSHARE_PROXY_USERNAME: ${{ secrets.WEBSHARE_PROXY_USERNAME }}
           WEBSHARE_PROXY_PASSWORD: ${{ secrets.WEBSHARE_PROXY_PASSWORD }}
-          WEBSITE_API_URL: ${{ vars.WEBSITE_API_URL }}
-          WEBSITE_API_KEY: ${{ secrets.WEBSITE_API_KEY }}
+          SITE_REPO_PAT: ${{ secrets.SITE_REPO_PAT }}
           MAX_VIDEOS_PER_RUN: ${{ vars.MAX_VIDEOS_PER_RUN }}
         run: python -m app.main ${{ (github.event.inputs.dry_run == 'true') && '--dry-run' || '' }}
 
       - name: Commit updated state
         uses: stefanzweifel/git-auto-commit-action@v7
         with:
-          commit_message: "chore: update processed videos state [skip ci]"
-          file_pattern: "data/processed_videos.json"
+          commit_message: "chore: update processed videos state (${{ matrix.target_site }}) [skip ci]"
+          file_pattern: "data/processed_videos_${{ matrix.target_site }}.json"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "41898282+github-actions[bot]@users.noreply.github.com"

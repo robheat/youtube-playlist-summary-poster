@@ -1,23 +1,17 @@
-"""Common interface implemented by every summary provider."""
+"""Common interface implemented by every article-generation provider."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
+from app.config import SiteProfile
 from app.youtube import VideoMetadata
-
-DEFAULT_PROMPT = (
-    "Watch this YouTube video and write a concise summary (3-5 sentences) "
-    "of what it covers, suitable for posting in plain text alongside the "
-    "embedded video on a website. Write the summary in English regardless "
-    "of the video's original language. Do not include a title or "
-    "preamble -- just the summary text."
-)
 
 
 class SummaryError(RuntimeError):
-    """Raised for any failure while generating a summary: network errors,
-    auth failures, quota limits, an unavailable/missing transcript, or an
-    empty model response.
+    """Raised for any failure while generating an article: network errors,
+    auth failures, quota limits, an unavailable/missing transcript, or a
+    response that fails validation (see app/summarize/article_json.py).
 
     main.py additionally wraps each video's processing in a broad
     `except Exception` as a defense-in-depth backstop, but providers should
@@ -26,9 +20,19 @@ class SummaryError(RuntimeError):
     """
 
 
+@dataclass(frozen=True)
+class ArticleContent:
+    title: str
+    summary: str
+    body: str
+    category: str
+    tags: list[str]
+
+
 class SummaryProvider(ABC):
     @abstractmethod
-    def summarize(self, video: VideoMetadata) -> str:
-        """Returns a plain-text summary of the video. Raises SummaryError
-        on failure."""
+    def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
+        """Returns a structured article for the video, written to match
+        site_profile's category taxonomy and body style. Raises
+        SummaryError on failure."""
         raise NotImplementedError

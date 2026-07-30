@@ -4,39 +4,35 @@ from __future__ import annotations
 import pytest
 
 from app import config as config_module
-from app.config import ConfigError, load_config
+from app.config import SITE_PROFILES, ConfigError, load_config
 
 REQUIRED_GEMINI_ENV = {
     "YOUTUBE_API_KEY": "yt-key",
-    "PLAYLIST_ID": "PL123",
+    "TARGET_SITE": "cryptocatalyst-news",
     "SUMMARY_PROVIDER": "gemini",
     "GEMINI_API_KEY": "gemini-key",
-    "WEBSITE_API_URL": "https://example.com/api/videos",
-    "WEBSITE_API_KEY": "website-key",
+    "SITE_REPO_PAT": "pat-token",
 }
 
 REQUIRED_VENICE_ENV = {
     "YOUTUBE_API_KEY": "yt-key",
-    "PLAYLIST_ID": "PL123",
+    "TARGET_SITE": "ainformed-dev",
     "SUMMARY_PROVIDER": "venice",
-    "VENICE_API_KEY": "venice-key",
-    "VENICE_MODEL": "some-venice-model",
-    "WEBSITE_API_URL": "https://example.com/api/videos",
-    "WEBSITE_API_KEY": "website-key",
+    "VENICE_AI_API_KEY": "venice-key",
+    "SITE_REPO_PAT": "pat-token",
 }
 
 ALL_KNOWN_VARS = [
     "YOUTUBE_API_KEY",
-    "PLAYLIST_ID",
+    "TARGET_SITE",
     "SUMMARY_PROVIDER",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
-    "VENICE_API_KEY",
+    "VENICE_AI_API_KEY",
     "VENICE_MODEL",
     "WEBSHARE_PROXY_USERNAME",
     "WEBSHARE_PROXY_PASSWORD",
-    "WEBSITE_API_URL",
-    "WEBSITE_API_KEY",
+    "SITE_REPO_PAT",
     "MAX_VIDEOS_PER_RUN",
 ]
 
@@ -66,7 +62,15 @@ def test_valid_venice_config_succeeds(monkeypatch):
     _set_env(monkeypatch, REQUIRED_VENICE_ENV)
     cfg = load_config()
     assert cfg.summary_provider == "venice"
-    assert cfg.venice_model == "some-venice-model"
+    assert cfg.venice_model == "mistral-small-3-2-24b-instruct"
+
+
+def test_site_profile_resolved_from_target_site(monkeypatch):
+    _set_env(monkeypatch, REQUIRED_GEMINI_ENV)
+    cfg = load_config()
+    assert cfg.site_profile is SITE_PROFILES["cryptocatalyst-news"]
+    assert cfg.site_profile.playlist_id == "PLLuz1PRurl7k"
+    assert cfg.state_file_path == "data/processed_videos_cryptocatalyst-news.json"
 
 
 def test_summary_provider_is_case_insensitive(monkeypatch):
@@ -75,12 +79,18 @@ def test_summary_provider_is_case_insensitive(monkeypatch):
     assert cfg.summary_provider == "gemini"
 
 
-@pytest.mark.parametrize("missing", ["YOUTUBE_API_KEY", "PLAYLIST_ID", "SUMMARY_PROVIDER"])
+@pytest.mark.parametrize("missing", ["YOUTUBE_API_KEY", "TARGET_SITE", "SUMMARY_PROVIDER"])
 def test_missing_always_required_var_fails(monkeypatch, missing):
     env = dict(REQUIRED_GEMINI_ENV)
     del env[missing]
     _set_env(monkeypatch, env)
     with pytest.raises(ConfigError, match=missing):
+        load_config()
+
+
+def test_invalid_target_site_fails(monkeypatch):
+    _set_env(monkeypatch, {**REQUIRED_GEMINI_ENV, "TARGET_SITE": "some-other-site"})
+    with pytest.raises(ConfigError, match="TARGET_SITE"):
         load_config()
 
 
@@ -100,18 +110,17 @@ def test_gemini_provider_without_gemini_key_fails(monkeypatch):
 
 def test_venice_provider_without_venice_key_fails(monkeypatch):
     env = dict(REQUIRED_VENICE_ENV)
-    del env["VENICE_API_KEY"]
+    del env["VENICE_AI_API_KEY"]
     _set_env(monkeypatch, env)
-    with pytest.raises(ConfigError, match="VENICE_API_KEY"):
+    with pytest.raises(ConfigError, match="VENICE_AI_API_KEY"):
         load_config()
 
 
-def test_venice_provider_without_venice_model_fails(monkeypatch):
+def test_venice_provider_without_venice_model_uses_default(monkeypatch):
     env = dict(REQUIRED_VENICE_ENV)
-    del env["VENICE_MODEL"]
     _set_env(monkeypatch, env)
-    with pytest.raises(ConfigError, match="VENICE_MODEL"):
-        load_config()
+    cfg = load_config()
+    assert cfg.venice_model == "mistral-small-3-2-24b-instruct"
 
 
 def test_venice_config_does_not_require_gemini_key(monkeypatch):
@@ -146,21 +155,19 @@ def test_proxy_both_set_succeeds(monkeypatch):
     assert cfg.webshare_proxy_password == "pass"
 
 
-def test_website_vars_not_required_in_dry_run(monkeypatch):
+def test_site_repo_pat_not_required_in_dry_run(monkeypatch):
     env = dict(REQUIRED_GEMINI_ENV)
-    del env["WEBSITE_API_URL"]
-    del env["WEBSITE_API_KEY"]
+    del env["SITE_REPO_PAT"]
     _set_env(monkeypatch, env)
     cfg = load_config(dry_run=True)
-    assert cfg.website_api_url is None
-    assert cfg.website_api_key is None
+    assert cfg.site_repo_pat is None
 
 
-def test_website_vars_required_outside_dry_run(monkeypatch):
+def test_site_repo_pat_required_outside_dry_run(monkeypatch):
     env = dict(REQUIRED_GEMINI_ENV)
-    del env["WEBSITE_API_URL"]
+    del env["SITE_REPO_PAT"]
     _set_env(monkeypatch, env)
-    with pytest.raises(ConfigError, match="WEBSITE_API_URL"):
+    with pytest.raises(ConfigError, match="SITE_REPO_PAT"):
         load_config(dry_run=False)
 
 
@@ -189,5 +196,5 @@ def test_reports_all_errors_at_once(monkeypatch):
         load_config()
     message = str(exc_info.value)
     assert "YOUTUBE_API_KEY" in message
-    assert "PLAYLIST_ID" in message
+    assert "TARGET_SITE" in message
     assert "SUMMARY_PROVIDER" in message

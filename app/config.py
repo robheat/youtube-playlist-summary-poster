@@ -12,10 +12,51 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_VENICE_MODEL = "mistral-small-3-2-24b-instruct"
 DEFAULT_MAX_VIDEOS_PER_RUN = 5
-DEFAULT_STATE_FILE_PATH = "data/processed_videos.json"
 
 VALID_PROVIDERS = {"gemini", "venice"}
+
+
+@dataclass(frozen=True)
+class SiteProfile:
+    key: str
+    repo_owner: str
+    repo_name: str
+    default_branch: str
+    playlist_id: str
+    categories: tuple[str, ...]
+    default_source_name: str
+    body_style_hint: str = (
+        "2-4 plain-prose paragraphs separated by a blank line. You may "
+        "start a paragraph with '## ' or '### ' for a subheading where it "
+        "genuinely helps (optional)."
+    )
+
+
+# Playlist IDs and category taxonomies live here, not in env vars -- this
+# removes any chance of mismatching a playlist to the wrong site via a
+# YAML typo, and keeps each site's fixed category enum in one place.
+SITE_PROFILES: dict[str, SiteProfile] = {
+    "cryptocatalyst-news": SiteProfile(
+        key="cryptocatalyst-news",
+        repo_owner="robheat",
+        repo_name="cryptocatalyst-news",
+        default_branch="master",
+        playlist_id="PLLuz1PRurl7k",
+        categories=("bitcoin", "ethereum", "defi", "nft", "policy", "web3", "general"),
+        default_source_name="YouTube",
+    ),
+    "ainformed-dev": SiteProfile(
+        key="ainformed-dev",
+        repo_owner="robheat",
+        repo_name="ainformed-dev",
+        default_branch="master",
+        playlist_id="PLTVCsU2gFTts",
+        categories=("models", "research", "tools", "policy", "industry", "open-source", "general"),
+        default_source_name="YouTube",
+    ),
+}
 
 
 class ConfigError(RuntimeError):
@@ -27,16 +68,16 @@ class ConfigError(RuntimeError):
 @dataclass(frozen=True)
 class Config:
     youtube_api_key: str
-    playlist_id: str
+    target_site: str
+    site_profile: SiteProfile
     summary_provider: str
     gemini_api_key: str | None
     gemini_model: str
     venice_api_key: str | None
-    venice_model: str | None
+    venice_model: str
     webshare_proxy_username: str | None
     webshare_proxy_password: str | None
-    website_api_url: str | None
-    website_api_key: str | None
+    site_repo_pat: str | None
     max_videos_per_run: int
     state_file_path: str
 
@@ -56,9 +97,19 @@ def load_config(*, dry_run: bool = False) -> Config:
     if not youtube_api_key:
         errors.append("YOUTUBE_API_KEY is required.")
 
-    playlist_id = _get("PLAYLIST_ID")
-    if not playlist_id:
-        errors.append("PLAYLIST_ID is required.")
+    target_site = _get("TARGET_SITE")
+    site_profile: SiteProfile | None = None
+    if not target_site:
+        errors.append(
+            f"TARGET_SITE is required (must be one of: {', '.join(sorted(SITE_PROFILES))})."
+        )
+    elif target_site not in SITE_PROFILES:
+        errors.append(
+            f"TARGET_SITE={target_site!r} is invalid; must be one of: "
+            f"{', '.join(sorted(SITE_PROFILES))}."
+        )
+    else:
+        site_profile = SITE_PROFILES[target_site]
 
     summary_provider_raw = _get("SUMMARY_PROVIDER")
     summary_provider = summary_provider_raw.lower() if summary_provider_raw else None
@@ -74,16 +125,10 @@ def load_config(*, dry_run: bool = False) -> Config:
         errors.append("GEMINI_API_KEY is required because SUMMARY_PROVIDER=gemini.")
     gemini_model = _get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
 
-    venice_api_key = _get("VENICE_API_KEY")
-    venice_model = _get("VENICE_MODEL")
-    if summary_provider == "venice":
-        if not venice_api_key:
-            errors.append("VENICE_API_KEY is required because SUMMARY_PROVIDER=venice.")
-        if not venice_model:
-            errors.append(
-                "VENICE_MODEL is required because SUMMARY_PROVIDER=venice "
-                "(there is no safe default -- pick a model from your Venice account)."
-            )
+    venice_api_key = _get("VENICE_AI_API_KEY")
+    if summary_provider == "venice" and not venice_api_key:
+        errors.append("VENICE_AI_API_KEY is required because SUMMARY_PROVIDER=venice.")
+    venice_model = _get("VENICE_MODEL") or DEFAULT_VENICE_MODEL
 
     webshare_proxy_username = _get("WEBSHARE_PROXY_USERNAME")
     webshare_proxy_password = _get("WEBSHARE_PROXY_PASSWORD")
@@ -93,13 +138,9 @@ def load_config(*, dry_run: bool = False) -> Config:
             "or both left unset."
         )
 
-    website_api_url = _get("WEBSITE_API_URL")
-    website_api_key = _get("WEBSITE_API_KEY")
-    if not dry_run:
-        if not website_api_url:
-            errors.append("WEBSITE_API_URL is required (unless running with --dry-run).")
-        if not website_api_key:
-            errors.append("WEBSITE_API_KEY is required (unless running with --dry-run).")
+    site_repo_pat = _get("SITE_REPO_PAT")
+    if not dry_run and not site_repo_pat:
+        errors.append("SITE_REPO_PAT is required (unless running with --dry-run).")
 
     max_videos_raw = _get("MAX_VIDEOS_PER_RUN")
     max_videos_per_run = DEFAULT_MAX_VIDEOS_PER_RUN
@@ -116,7 +157,8 @@ def load_config(*, dry_run: bool = False) -> Config:
 
     return Config(
         youtube_api_key=youtube_api_key,
-        playlist_id=playlist_id,
+        target_site=target_site,
+        site_profile=site_profile,
         summary_provider=summary_provider,
         gemini_api_key=gemini_api_key,
         gemini_model=gemini_model,
@@ -124,8 +166,7 @@ def load_config(*, dry_run: bool = False) -> Config:
         venice_model=venice_model,
         webshare_proxy_username=webshare_proxy_username,
         webshare_proxy_password=webshare_proxy_password,
-        website_api_url=website_api_url,
-        website_api_key=website_api_key,
+        site_repo_pat=site_repo_pat,
         max_videos_per_run=max_videos_per_run,
-        state_file_path=DEFAULT_STATE_FILE_PATH,
+        state_file_path=f"data/processed_videos_{target_site}.json",
     )
