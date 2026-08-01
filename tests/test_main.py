@@ -1,8 +1,11 @@
 """Tests for app.main's orchestration logic in run() -- the highest-value
 test file in the suite. These catch the correctness properties the design
 depends on: a failed video never blocks the rest of the batch, a clone
-failure is fatal to the whole run (nothing could have been published),
-dry-run never has side effects, and unavailable videos are auto-skipped.
+failure is fatal to the whole run (nothing could have been published) but
+a batch-push failure is not (article generation already happened and
+nothing was actually published either way), dry-run never has side
+effects, unavailable videos are auto-skipped, and multiple videos staged
+in one run are pushed as exactly one commit.
 """
 from __future__ import annotations
 
@@ -69,10 +72,20 @@ class FakeProvider:
 
 
 class FakePublisher:
-    def __init__(self, *args, raise_on_enter=None, raise_on_publish_for=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        raise_on_enter=None,
+        raise_on_stage_for=None,
+        raise_on_push_all=None,
+        **kwargs,
+    ):
         self._raise_on_enter = raise_on_enter
-        self._raise_on_publish_for = raise_on_publish_for or {}
-        self.published = []
+        self._raise_on_stage_for = raise_on_stage_for or {}
+        self._raise_on_push_all = raise_on_push_all
+        self.staged: list[str] = []
+        self.pushed: list[str] = []
+        self.push_all_call_count = 0
 
     def __enter__(self):
         if self._raise_on_enter:
@@ -82,11 +95,18 @@ class FakePublisher:
     def __exit__(self, *args):
         return False
 
-    def publish(self, video, article):
-        if video.video_id in self._raise_on_publish_for:
-            raise self._raise_on_publish_for[video.video_id]
-        self.published.append(video.video_id)
+    def stage(self, video, article):
+        if video.video_id in self._raise_on_stage_for:
+            raise self._raise_on_stage_for[video.video_id]
+        self.staged.append(video.video_id)
         return f"slug-{video.video_id}"
+
+    def push_all(self):
+        self.push_all_call_count += 1
+        if self._raise_on_push_all:
+            raise self._raise_on_push_all
+        self.pushed = list(self.staged)
+        return len(self.pushed)
 
 
 def test_parse_args_dry_run_flag():
@@ -109,7 +129,9 @@ def test_video_failure_does_not_stop_batch_or_mark_processed(tmp_path, sample_si
 
     assert exit_code == 0
     assert provider.calls == ["good1", "bad", "good2"]
-    assert fake_publisher.published == ["good1", "good2"]
+    assert fake_publisher.staged == ["good1", "good2"]
+    # One failure in the middle doesn't split the rest into separate pushes.
+    assert fake_publisher.push_all_call_count == 1
 
     state = StateStore(config.state_file_path)
     state.load()
@@ -118,11 +140,11 @@ def test_video_failure_does_not_stop_batch_or_mark_processed(tmp_path, sample_si
     assert not state.is_processed("bad")
 
 
-def test_publish_failure_does_not_mark_processed(tmp_path, sample_site_profile):
+def test_stage_failure_does_not_mark_processed(tmp_path, sample_site_profile):
     config = _make_config(tmp_path, sample_site_profile)
     videos = [_make_video("vid1")]
     provider = FakeProvider()
-    fake_publisher = FakePublisher(raise_on_publish_for={"vid1": PublishError("push failed")})
+    fake_publisher = FakePublisher(raise_on_stage_for={"vid1": PublishError("stage failed")})
 
     with (
         patch("app.main.fetch_playlist_videos", return_value=videos),
@@ -132,6 +154,8 @@ def test_publish_failure_does_not_mark_processed(tmp_path, sample_site_profile):
         exit_code = run(config, dry_run=False)
 
     assert exit_code == 0
+    # Nothing staged successfully, so push_all() is never even attempted.
+    assert fake_publisher.push_all_call_count == 0
     state = StateStore(config.state_file_path)
     state.load()
     assert not state.is_processed("vid1")
@@ -155,6 +179,87 @@ def test_clone_failure_is_fatal_to_whole_run(tmp_path, sample_site_profile):
     state = StateStore(config.state_file_path)
     state.load()
     assert not state.is_processed("vid1")
+
+
+def test_multiple_videos_in_one_run_result_in_exactly_one_push_call(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("vid1"), _make_video("vid2"), _make_video("vid3")]
+    provider = FakeProvider()
+    fake_publisher = FakePublisher()
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        exit_code = run(config, dry_run=False)
+
+    assert exit_code == 0
+    assert fake_publisher.push_all_call_count == 1
+    assert fake_publisher.pushed == ["vid1", "vid2", "vid3"]
+    state = StateStore(config.state_file_path)
+    state.load()
+    assert state.is_processed("vid1")
+    assert state.is_processed("vid2")
+    assert state.is_processed("vid3")
+
+
+def test_push_all_failure_does_not_mark_any_staged_video_processed(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("vid1"), _make_video("vid2")]
+    provider = FakeProvider()
+    fake_publisher = FakePublisher(raise_on_push_all=PublishError("push failed"))
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        exit_code = run(config, dry_run=False)
+
+    # Non-fatal -- retried next run, see run()'s "Fatal vs. non-fatal" note.
+    assert exit_code == 0
+    assert fake_publisher.push_all_call_count == 1
+    state = StateStore(config.state_file_path)
+    state.load()
+    assert not state.is_processed("vid1")
+    assert not state.is_processed("vid2")
+
+
+def test_unavailable_skip_marks_processed_even_if_batch_push_fails(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("private1", title="Private video"), _make_video("vid2")]
+    provider = FakeProvider()
+    fake_publisher = FakePublisher(raise_on_push_all=PublishError("push failed"))
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        exit_code = run(config, dry_run=False)
+
+    assert exit_code == 0
+    state = StateStore(config.state_file_path)
+    state.load()
+    assert state.is_processed("private1")  # immediate skip, independent of push
+    assert not state.is_processed("vid2")  # staged but push failed -- retried next run
+
+
+def test_push_all_not_called_when_no_video_staged_successfully(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("bad")]
+    provider = FakeProvider(raises_for={"bad": SummaryError("boom")})
+    fake_publisher = FakePublisher()
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        run(config, dry_run=False)
+
+    assert fake_publisher.push_all_call_count == 0
 
 
 def test_max_videos_per_run_caps_batch(tmp_path, sample_site_profile):

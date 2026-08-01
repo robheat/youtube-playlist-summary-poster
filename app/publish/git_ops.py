@@ -79,17 +79,21 @@ def commit_and_push_with_retry(
     """Stages paths_to_add, commits, and pushes -- retrying on rejection by
     fetching and rebasing onto the latest remote branch.
 
+    Called once per run with every staged video's paths batched into a
+    single commit (see SitePublisher.push_all()), not once per video --
+    this keeps Vercel's auto-deploy-on-push to a single rebuild per run.
+
     Safe to rebase here: this app's commits only ever ADD brand-new,
     uniquely-slugged files, never touching a path any other process would
     touch, so a rebase is always a clean linear replay unless there's a
-    genuine slug collision (in which case it fails cleanly below and the
-    video is retried next run, by which point the on-disk collision will
-    make site_publisher.py bump the slug instead).
+    genuine slug collision (in which case it fails cleanly below and
+    every video staged this run is retried next run, by which point the
+    on-disk collision will make site_publisher.py bump the slug instead).
 
     Returns False if there was nothing to commit (paths_to_add matched no
     changes). Raises GitOpsError if the push still fails after
-    max_attempts, after discarding the local commit so it can't silently
-    ride along with a later video's commit in the same run.
+    max_attempts, after discarding the local commit so a failed push
+    can't silently leave a dangling commit behind in the clone.
     """
     _run(["git", "add", *paths_to_add], cwd=repo_path)
 
@@ -132,8 +136,12 @@ def commit_and_push_with_retry(
 
 
 def _reset_to_remote(repo_path: str, branch: str) -> None:
-    """Discards any local commit that failed to push. Without this, a
-    failed video's changes would silently get bundled into the NEXT
-    video's commit when that one eventually succeeds."""
+    """Discards any local commit that failed to push, leaving the clone's
+    working tree consistent with origin. commit_and_push_with_retry is
+    called at most once per run now (the whole batch in one commit -- see
+    SitePublisher.push_all()), so this no longer guards against a second,
+    later commit in the same run riding along with a failed one; it's
+    just defensive cleanup of the (short-lived, about-to-be-deleted)
+    clone directory."""
     subprocess.run(["git", "fetch", "origin", branch], cwd=repo_path, capture_output=True)
     subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=repo_path, capture_output=True)

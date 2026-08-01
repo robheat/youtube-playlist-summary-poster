@@ -2,10 +2,12 @@
 
 git_ops itself is mocked here (it's separately proven against a real repo
 in test_git_ops.py) -- these tests focus on slug-bumping, file-writing,
-and error translation in isolation.
+and the stage()/push_all() split that batches every video processed in a
+run into a single commit (see push_all()'s docstring for why).
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from unittest.mock import patch
@@ -39,6 +41,14 @@ SAMPLE_ARTICLE = ArticleContent(
     body="Paragraph one.\n\nParagraph two.",
     category="news",
     tags=["bitcoin", "etf"],
+)
+
+OTHER_ARTICLE = ArticleContent(
+    title="Ethereum Layer-2 Rollups Explained",
+    summary="A different short standfirst.",
+    body="Paragraph one.\n\nParagraph two.",
+    category="news",
+    tags=["ethereum", "l2"],
 )
 
 
@@ -91,11 +101,11 @@ def test_clone_failure_raises_publish_error_and_cleans_up(sample_site_profile, p
             pass  # pragma: no cover -- __enter__ should raise first
 
 
-def test_publish_writes_article_json_with_expected_fields(
+def test_stage_writes_article_json_with_expected_fields(
     sample_video, sample_site_profile, publisher_patches
 ):
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
+        slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
 
         article_path = os.path.join(publisher._clone_dir, "content", "articles", f"{slug}.json")
         with open(article_path, encoding="utf-8") as f:
@@ -115,15 +125,13 @@ def test_publish_writes_article_json_with_expected_fields(
     assert data["slug"] == slug
 
 
-def test_publish_falls_back_to_default_source_name_when_channel_title_empty(
+def test_stage_falls_back_to_default_source_name_when_channel_title_empty(
     sample_video, sample_site_profile, publisher_patches
 ):
-    import dataclasses
-
     video_no_channel = dataclasses.replace(sample_video, channel_title="")
 
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        slug = publisher.publish(video_no_channel, SAMPLE_ARTICLE)
+        slug = publisher.stage(video_no_channel, SAMPLE_ARTICLE)
         article_path = os.path.join(publisher._clone_dir, "content", "articles", f"{slug}.json")
         with open(article_path, encoding="utf-8") as f:
             data = json.load(f)
@@ -131,9 +139,9 @@ def test_publish_falls_back_to_default_source_name_when_channel_title_empty(
     assert data["sourceName"] == sample_site_profile.default_source_name
 
 
-def test_publish_writes_image_file(sample_video, sample_site_profile, publisher_patches):
+def test_stage_writes_image_file(sample_video, sample_site_profile, publisher_patches):
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
+        slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
         image_path = os.path.join(publisher._clone_dir, "public", "images", "articles", f"{slug}.jpg")
         with open(image_path, "rb") as f:
             content = f.read()
@@ -141,13 +149,13 @@ def test_publish_writes_image_file(sample_video, sample_site_profile, publisher_
     assert content == MINIMAL_JPEG_200x100
 
 
-def test_publish_omits_dimensions_when_not_a_parseable_jpeg(
+def test_stage_omits_dimensions_when_not_a_parseable_jpeg(
     sample_video, sample_site_profile, publisher_patches
 ):
     publisher_patches["download"].return_value = b"not a real jpeg"
 
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
+        slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
         article_path = os.path.join(publisher._clone_dir, "content", "articles", f"{slug}.json")
         with open(article_path, encoding="utf-8") as f:
             data = json.load(f)
@@ -156,40 +164,109 @@ def test_publish_omits_dimensions_when_not_a_parseable_jpeg(
     assert "imageHeight" not in data
 
 
-def test_publish_bumps_slug_on_collision(sample_video, sample_site_profile, publisher_patches):
-    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        first_slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
-        second_slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
-
-    assert first_slug != second_slug
-    assert second_slug == f"{first_slug}-2"
-
-
-def test_publish_calls_commit_and_push_with_both_paths(
-    sample_video, sample_site_profile, publisher_patches
-):
-    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
-        slug = publisher.publish(sample_video, SAMPLE_ARTICLE)
-
-    _, kwargs = publisher_patches["push"].call_args
-    assert kwargs["paths_to_add"] == [
-        f"content/articles/{slug}.json",
-        f"public/images/articles/{slug}.jpg",
-    ]
-    assert sample_video.video_id in kwargs["commit_message"]
-
-
-def test_publish_wraps_image_download_error(sample_video, sample_site_profile, publisher_patches):
+def test_stage_wraps_image_download_error(sample_video, sample_site_profile, publisher_patches):
     publisher_patches["download"].side_effect = ImageDownloadError("download failed")
 
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
         with pytest.raises(PublishError, match="download failed"):
-            publisher.publish(sample_video, SAMPLE_ARTICLE)
+            publisher.stage(sample_video, SAMPLE_ARTICLE)
 
 
-def test_publish_wraps_git_ops_error(sample_video, sample_site_profile, publisher_patches):
+def test_stage_bumps_slug_on_collision(sample_video, sample_site_profile, publisher_patches):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        first_slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
+        second_slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
+
+    assert first_slug != second_slug
+    assert second_slug == f"{first_slug}-2"
+    # Staging -- even staging twice -- must never touch git.
+    publisher_patches["push"].assert_not_called()
+
+
+def test_stage_never_calls_commit_and_push(sample_video, sample_site_profile, publisher_patches):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.stage(sample_video, SAMPLE_ARTICLE)
+
+    publisher_patches["push"].assert_not_called()
+
+
+def test_push_all_does_nothing_when_nothing_staged(sample_site_profile, publisher_patches):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        result = publisher.push_all()
+
+    assert result == 0
+    publisher_patches["push"].assert_not_called()
+
+
+def test_push_all_returns_number_of_staged_videos(
+    sample_video, sample_site_profile, publisher_patches
+):
+    other_video = dataclasses.replace(sample_video, video_id="other456")
+
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.stage(sample_video, SAMPLE_ARTICLE)
+        publisher.stage(other_video, OTHER_ARTICLE)
+        result = publisher.push_all()
+
+    assert result == 2
+
+
+def test_push_all_commits_all_staged_paths_in_one_call(
+    sample_video, sample_site_profile, publisher_patches
+):
+    other_video = dataclasses.replace(sample_video, video_id="other456")
+
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        slug1 = publisher.stage(sample_video, SAMPLE_ARTICLE)
+        slug2 = publisher.stage(other_video, OTHER_ARTICLE)
+        publisher.push_all()
+
+    assert publisher_patches["push"].call_count == 1
+    _, kwargs = publisher_patches["push"].call_args
+    assert kwargs["paths_to_add"] == [
+        f"content/articles/{slug1}.json",
+        f"public/images/articles/{slug1}.jpg",
+        f"content/articles/{slug2}.json",
+        f"public/images/articles/{slug2}.jpg",
+    ]
+
+
+def test_push_all_commit_message_matches_single_video_format_when_only_one_staged(
+    sample_video, sample_site_profile, publisher_patches
+):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.stage(sample_video, SAMPLE_ARTICLE)
+        publisher.push_all()
+
+    _, kwargs = publisher_patches["push"].call_args
+    assert kwargs["commit_message"] == (
+        f"Add article from YouTube video {sample_video.video_id}: {SAMPLE_ARTICLE.title}"
+    )
+
+
+def test_push_all_commit_message_lists_all_staged_video_ids_and_titles_when_multiple(
+    sample_video, sample_site_profile, publisher_patches
+):
+    other_video = dataclasses.replace(sample_video, video_id="other456")
+
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.stage(sample_video, SAMPLE_ARTICLE)
+        publisher.stage(other_video, OTHER_ARTICLE)
+        publisher.push_all()
+
+    _, kwargs = publisher_patches["push"].call_args
+    message = kwargs["commit_message"]
+    assert "Add 2 articles from YouTube videos" in message
+    assert f"{sample_video.video_id}: {SAMPLE_ARTICLE.title}" in message
+    assert f"{other_video.video_id}: {OTHER_ARTICLE.title}" in message
+
+
+def test_push_all_wraps_git_ops_error(sample_video, sample_site_profile, publisher_patches):
+    other_video = dataclasses.replace(sample_video, video_id="other456")
     publisher_patches["push"].side_effect = GitOpsError("push failed")
 
     with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.stage(sample_video, SAMPLE_ARTICLE)
+        publisher.stage(other_video, OTHER_ARTICLE)
         with pytest.raises(PublishError, match="push failed"):
-            publisher.publish(sample_video, SAMPLE_ARTICLE)
+            publisher.push_all()

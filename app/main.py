@@ -44,11 +44,18 @@ def _process_videos(
     publisher: SitePublisher | None,
     *,
     dry_run: bool,
-) -> bool:
+) -> tuple[bool, list[VideoMetadata]]:
     """Processes each video independently: a failure never aborts the rest
-    of the batch and never marks that video processed (so it's retried
-    next run). Returns whether anything was newly marked processed."""
+    of the batch. Unavailable videos are marked processed immediately (no
+    git involved). Every other video whose article generates successfully
+    is STAGED into the publisher's local clone -- files written to disk,
+    nothing committed or pushed yet. The caller must call
+    publisher.push_all() once after this returns and call
+    state.mark_processed() for the returned videos ONLY if that push
+    succeeds; staging alone must never mark a video processed. Returns
+    (processed_any_immediately, staged_videos)."""
     processed_any = False
+    staged_videos: list[VideoMetadata] = []
 
     for video in videos:
         if video.is_unavailable:
@@ -73,11 +80,10 @@ def _process_videos(
                 continue
 
             assert publisher is not None
-            slug = publisher.publish(video, article)
-            state.mark_processed(video.video_id, video.title)
-            processed_any = True
+            slug = publisher.stage(video, article)
+            staged_videos.append(video)
             logger.info(
-                "Published video %s (%s) as %s/%s",
+                "Staged video %s (%s) as %s/%s (pushed with the rest of this run's batch)",
                 video.video_id,
                 video.title,
                 config.target_site,
@@ -91,7 +97,7 @@ def _process_videos(
                 "Unexpected error processing video %s (%s)", video.video_id, video.title
             )
 
-    return processed_any
+    return processed_any, staged_videos
 
 
 def run(config: Config, *, dry_run: bool) -> int:
@@ -124,13 +130,41 @@ def run(config: Config, *, dry_run: bool) -> int:
 
     try:
         with SitePublisher(config.site_profile, config.site_repo_pat) as publisher:
-            processed_any = _process_videos(
+            processed_any, staged_videos = _process_videos(
                 to_process, provider, config, state, publisher, dry_run=False
             )
+
+            if staged_videos:
+                try:
+                    pushed_count = publisher.push_all()
+                except PublishError as exc:
+                    # Non-fatal: article generation for these videos already
+                    # happened (the expensive part), and nothing was actually
+                    # published -- commit_and_push_with_retry discards the
+                    # failed local commit. They simply stay unmarked and get
+                    # regenerated and retried next run, exactly like any
+                    # other per-video PublishError above.
+                    logger.error(
+                        "Failed to push batch of %d video(s) to %s -- all will be "
+                        "retried next run: %s",
+                        len(staged_videos),
+                        config.target_site,
+                        exc,
+                    )
+                else:
+                    for video in staged_videos:
+                        state.mark_processed(video.video_id, video.title)
+                    processed_any = True
+                    logger.info(
+                        "Pushed %d video(s) to %s in a single commit",
+                        pushed_count,
+                        config.target_site,
+                    )
     except PublishError as exc:
         # The clone itself failed -- fatal for the whole run, since nothing
-        # could have been published. Per-video PublishErrors are caught
-        # inside _process_videos and never reach here.
+        # could have been staged or published. Per-video staging errors and
+        # the batch-push error above are both handled inside the `with`
+        # block and never reach here.
         logger.error("Fatal error: %s", exc)
         return 1
 
