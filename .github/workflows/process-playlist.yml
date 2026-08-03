@@ -33,7 +33,19 @@ jobs:
       group: process-playlist-${{ matrix.target_site }}
       cancel-in-progress: false
     steps:
+      # ref: github.ref (not the default github.sha) so each matrix leg's
+      # checkout resolves the branch fresh at ITS OWN checkout time. With
+      # the default, actions/checkout@v4 checks out github.sha, which is
+      # fixed once for the whole workflow run -- so even with max-parallel:
+      # 1 correctly serializing the two legs (no time overlap), the SECOND
+      # leg still checked out the PRE-RUN commit and missed the first
+      # leg's own state-file push moments earlier, causing its own
+      # state-file push to be rejected as non-fast-forward. Confirmed via
+      # a real failed run: the two jobs had zero time overlap, yet still
+      # diverged.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - uses: actions/setup-python@v5
         with:
