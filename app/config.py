@@ -32,6 +32,15 @@ class SiteProfile:
         "start a paragraph with '## ' or '### ' for a subheading where it "
         "genuinely helps (optional)."
     )
+    # Optional article fields this site's Article type renders, beyond the
+    # required title/summary/body/category/tags. Mirrors lib/types.ts in
+    # each site repo -- asking for a field the site doesn't render just
+    # wastes tokens. See app/summarize/article_json.py for each field's
+    # prompt wording and validation.
+    extra_fields: frozenset[str] = frozenset()
+    # Headline words too common on this site to count as evidence that two
+    # articles are related (see app/summarize/internal_links.py).
+    link_stopwords: tuple[str, ...] = ()
 
 
 # Playlist IDs and category taxonomies live here, not in env vars -- this
@@ -46,6 +55,8 @@ SITE_PROFILES: dict[str, SiteProfile] = {
         playlist_id="PLLuz1PRurl7k",
         categories=("bitcoin", "ethereum", "defi", "nft", "policy", "web3", "general"),
         default_source_name="YouTube",
+        extra_fields=frozenset({"seoTitle", "metaDescription", "keyTakeaways", "faq"}),
+        link_stopwords=("crypto", "bitcoin", "ethereum", "blockchain"),
     ),
     "ainformed-dev": SiteProfile(
         key="ainformed-dev",
@@ -55,6 +66,11 @@ SITE_PROFILES: dict[str, SiteProfile] = {
         playlist_id="PLTVCsU2gFTts",
         categories=("models", "research", "tools", "policy", "industry", "open-source", "general"),
         default_source_name="YouTube",
+        # No seoTitle/metaDescription: ainformed-dev's Article type has
+        # neither. No imageAlt either: the hero is the YouTube thumbnail,
+        # which the model never sees, and the site falls back to the title.
+        extra_fields=frozenset({"keyTakeaways", "faq", "entities"}),
+        link_stopwords=("ai", "model", "models", "openai", "llm", "llms"),
     ),
 }
 

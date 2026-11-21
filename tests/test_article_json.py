@@ -2,6 +2,7 @@
 validation shared by both providers."""
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -91,3 +92,93 @@ def test_parse_article_raises_on_non_object_json(sample_site_profile):
 def test_parse_article_raises_on_unparseable_text(sample_site_profile):
     with pytest.raises(SummaryError):
         parse_article("this is not json", sample_site_profile, "vid123")
+
+
+# --- optional fields and internal links ---------------------------------------
+
+ALL_EXTRAS = frozenset({"seoTitle", "metaDescription", "keyTakeaways", "faq", "entities"})
+
+EXTRAS_PAYLOAD = {
+    **VALID_PAYLOAD,
+    "seoTitle": "  A Search   Title  ",
+    "metaDescription": "M" * 300,
+    "keyTakeaways": [
+        "- **OpenAI** released a model that runs on a single consumer GPU.",
+        "Too short.",
+        42,
+    ],
+    "faq": [
+        {"question": "Is it free to use", "answer": "Yes, under an open licence."},
+        {"question": "No answer here?"},
+        "not an object",
+    ],
+    "entities": [
+        {"name": "OpenAI", "type": "Organization", "sameAs": "https://en.wikipedia.org/wiki/OpenAI"},
+        {"name": "openai", "type": "Organization"},
+        {"name": "GPT-9", "type": "Spaceship", "sameAs": "https://example.com/gpt-9"},
+    ],
+}
+
+
+def test_build_json_instructions_includes_only_the_sites_extra_fields(sample_site_profile):
+    profile = dataclasses.replace(sample_site_profile, extra_fields=frozenset({"faq"}))
+    instructions = build_json_instructions(profile)
+    assert '"faq"' in instructions
+    assert '"keyTakeaways"' not in instructions
+    assert '"seoTitle"' not in instructions
+
+
+def test_build_json_instructions_omits_extras_and_links_by_default(sample_site_profile):
+    instructions = build_json_instructions(sample_site_profile)
+    for key in ALL_EXTRAS:
+        assert f'"{key}"' not in instructions
+    assert "related_articles" not in instructions
+
+
+def test_build_json_instructions_includes_related_articles_when_given(sample_site_profile):
+    related = [{"slug": "uniswap-v4", "title": "Uniswap V4", "summary": "About v4."}]
+    instructions = build_json_instructions(sample_site_profile, related)
+    assert "/articles/<slug>" in instructions
+    assert '"slug": "uniswap-v4"' in instructions
+
+
+def test_build_json_instructions_omits_link_block_for_empty_related(sample_site_profile):
+    assert "related_articles" not in build_json_instructions(sample_site_profile, [])
+
+
+def test_parse_article_normalizes_extras_and_drops_malformed_entries(sample_site_profile):
+    profile = dataclasses.replace(sample_site_profile, extra_fields=ALL_EXTRAS)
+    article = parse_article(json.dumps(EXTRAS_PAYLOAD), profile, "vid123")
+
+    assert article.seo_title == "A Search Title"
+    assert article.meta_description == "M" * 180
+    assert article.key_takeaways == ["OpenAI released a model that runs on a single consumer GPU."]
+    assert article.faq == [{"question": "Is it free to use?", "answer": "Yes, under an open licence."}]
+    assert article.entities == [
+        {"name": "OpenAI", "type": "Organization", "sameAs": "https://en.wikipedia.org/wiki/OpenAI"},
+        {"name": "GPT-9", "type": "Thing"},
+    ]
+
+
+def test_parse_article_ignores_extras_the_site_did_not_ask_for(sample_site_profile):
+    article = parse_article(json.dumps(EXTRAS_PAYLOAD), sample_site_profile, "vid123")
+    assert article.seo_title == ""
+    assert article.key_takeaways == []
+    assert article.faq == []
+    assert article.entities == []
+
+
+def test_parse_article_malformed_extras_never_fail_the_video(sample_site_profile):
+    profile = dataclasses.replace(sample_site_profile, extra_fields=ALL_EXTRAS)
+    payload = {
+        **VALID_PAYLOAD,
+        "seoTitle": ["not", "a", "string"],
+        "keyTakeaways": "not a list",
+        "faq": {"question": "q", "answer": "a"},
+        "entities": None,
+    }
+    article = parse_article(json.dumps(payload), profile, "vid123")
+    assert article.seo_title == ""
+    assert article.key_takeaways == []
+    assert article.faq == []
+    assert article.entities == []

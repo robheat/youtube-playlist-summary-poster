@@ -31,6 +31,7 @@ from app.publish.image_dims import jpeg_size
 from app.publish.images import ImageDownloadError, download_thumbnail
 from app.publish.slugify import slugify
 from app.summarize.base import ArticleContent
+from app.summarize.internal_links import corpus_entry
 from app.youtube import VideoMetadata
 
 
@@ -47,6 +48,7 @@ class SitePublisher:
         self._clone_dir: str | None = None
         self._staged_paths: list[str] = []
         self._staged_entries: list[tuple[str, str]] = []  # (video_id, title)
+        self._corpus: list[dict] | None = None
 
     def __enter__(self) -> "SitePublisher":
         self._clone_dir = tempfile.mkdtemp(prefix="site-publish-")
@@ -67,6 +69,30 @@ class SitePublisher:
         if self._clone_dir and os.path.isdir(self._clone_dir):
             shutil.rmtree(self._clone_dir, ignore_errors=True)
         self._clone_dir = None
+
+    def existing_articles(self) -> list[dict]:
+        """Every article already in the site repo (plus any staged earlier
+        this run), as the lightweight corpus_entry() slice internal-link
+        selection needs. Read from the clone's content/articles/, which the
+        sparse checkout always includes. Read once and cached; unreadable
+        files are skipped rather than failing the run."""
+        if self._clone_dir is None:
+            raise RuntimeError("SitePublisher must be used as a context manager")
+        if self._corpus is None:
+            self._corpus = []
+            articles_dir = os.path.join(self._clone_dir, "content", "articles")
+            if os.path.isdir(articles_dir):
+                for name in sorted(os.listdir(articles_dir)):
+                    if not name.endswith(".json"):
+                        continue
+                    try:
+                        with open(os.path.join(articles_dir, name), encoding="utf-8") as f:
+                            data = json.load(f)
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(data, dict) and data.get("slug"):
+                        self._corpus.append(corpus_entry(data))
+        return self._corpus
 
     def stage(self, video: VideoMetadata, article: ArticleContent) -> str:
         """Writes the article JSON + thumbnail image into the local clone.
@@ -108,6 +134,16 @@ class SitePublisher:
         }
         if dims is not None:
             payload["imageWidth"], payload["imageHeight"] = dims
+        # Optional fields: only written when the site asked for them and the
+        # model produced something usable, so other articles' JSON is unchanged.
+        optional = {
+            "seoTitle": article.seo_title,
+            "metaDescription": article.meta_description,
+            "keyTakeaways": article.key_takeaways,
+            "faq": article.faq,
+            "entities": article.entities,
+        }
+        payload.update({key: value for key, value in optional.items() if value})
 
         os.makedirs(os.path.dirname(article_path), exist_ok=True)
         os.makedirs(os.path.dirname(image_path), exist_ok=True)
@@ -119,6 +155,10 @@ class SitePublisher:
 
         self._staged_paths.extend([article_rel_path, image_rel_path])
         self._staged_entries.append((video.video_id, article.title))
+        # Later videos this run may link to this one -- safe, since they're
+        # all pushed in the same commit or not at all.
+        if self._corpus is not None:
+            self._corpus.append(corpus_entry(payload))
 
         return slug
 

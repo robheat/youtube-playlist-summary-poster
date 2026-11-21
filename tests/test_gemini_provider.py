@@ -83,6 +83,17 @@ def test_generate_article_prompt_includes_site_categories(sample_video, sample_s
         assert category in prompt_text
 
 
+def test_generate_article_prompt_includes_related_articles(sample_video, sample_site_profile):
+    provider, fake_client = _make_provider()
+    related = [{"slug": "uniswap-v4", "title": "Uniswap V4", "summary": "About v4."}]
+
+    with patch("app.summarize.gemini.get_transcript", return_value="transcript"):
+        provider.generate_article(sample_video, sample_site_profile, related)
+
+    _, kwargs = fake_client.models.generate_content.call_args
+    assert '"slug": "uniswap-v4"' in kwargs["contents"][0]
+
+
 def test_generate_article_truncates_long_transcript(sample_video, sample_site_profile):
     provider, fake_client = _make_provider(max_transcript_chars=20)
     long_transcript = "word " * 100

@@ -53,7 +53,12 @@ class GeminiProvider(SummaryProvider):
         self._proxy_password = proxy_password
         self._max_transcript_chars = max_transcript_chars
 
-    def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
+    def generate_article(
+        self,
+        video: VideoMetadata,
+        site_profile: SiteProfile,
+        related: list[dict] | None = None,
+    ) -> ArticleContent:
         try:
             transcript = get_transcript(
                 video.video_id,
@@ -69,7 +74,7 @@ class GeminiProvider(SummaryProvider):
         transcript = transcript[: self._max_transcript_chars]
         prompt = (
             f"{PROMPT_PREFIX_TEMPLATE.format(title=video.title)}\n\n"
-            f"{build_json_instructions(site_profile)}\n\n"
+            f"{build_json_instructions(site_profile, related)}\n\n"
             f"Transcript:\n{transcript}"
         )
 
