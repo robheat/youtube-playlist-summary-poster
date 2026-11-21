@@ -218,6 +218,7 @@ def clean_faq(value) -> list[dict]:
         answer = _clean_line(item.get("answer"), 600)
         if not question or not answer:
             continue
+        question = question[0].upper() + question[1:]
         if not question.endswith("?"):
             question = f"{question}?"
         out.append({"question": question, "answer": answer})

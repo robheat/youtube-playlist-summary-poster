@@ -108,7 +108,7 @@ EXTRAS_PAYLOAD = {
         42,
     ],
     "faq": [
-        {"question": "Is it free to use", "answer": "Yes, under an open licence."},
+        {"question": "is it free to use", "answer": "Yes, under an open licence."},
         {"question": "No answer here?"},
         "not an object",
     ],
