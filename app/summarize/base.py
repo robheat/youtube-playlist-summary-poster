@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.config import SiteProfile
 from app.youtube import VideoMetadata
@@ -27,12 +27,26 @@ class ArticleContent:
     body: str
     category: str
     tags: list[str]
+    # Optional fields, only requested for sites that list them in
+    # SiteProfile.extra_fields. Empty means "omit from the published JSON".
+    seo_title: str = ""
+    meta_description: str = ""
+    key_takeaways: list[str] = field(default_factory=list)
+    faq: list[dict] = field(default_factory=list)
+    entities: list[dict] = field(default_factory=list)
 
 
 class SummaryProvider(ABC):
     @abstractmethod
-    def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
+    def generate_article(
+        self,
+        video: VideoMetadata,
+        site_profile: SiteProfile,
+        related: list[dict] | None = None,
+    ) -> ArticleContent:
         """Returns a structured article for the video, written to match
-        site_profile's category taxonomy and body style. Raises
-        SummaryError on failure."""
+        site_profile's category taxonomy and body style. `related` is the
+        list of existing site articles the model may link to inline (see
+        app/summarize/internal_links.py); None or empty means no links.
+        Raises SummaryError on failure."""
         raise NotImplementedError

@@ -8,14 +8,21 @@ Usage: python -m app.main [--dry-run]
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import sys
+from contextlib import ExitStack
 
 from app.config import Config, ConfigError, load_config
 from app.publish.site_publisher import PublishError, SitePublisher
 from app.state import StateFileError, StateStore
 from app.summarize import SummaryError, get_provider
 from app.summarize.base import SummaryProvider
+from app.summarize.internal_links import (
+    related_payload,
+    sanitize_internal_links,
+    select_link_candidates,
+)
 from app.youtube import VideoMetadata, YouTubeApiError, fetch_playlist_videos
 
 logger = logging.getLogger("app")
@@ -30,7 +37,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Generate articles and log what would be published, but never "
-            "clone/push to the site repo or save processed-video state."
+            "push to the site repo or save processed-video state. If "
+            "SITE_REPO_PAT is set, the site repo is still cloned (read-only) "
+            "so internal-link candidates can be chosen."
         ),
     )
     return parser.parse_args(argv)
@@ -52,7 +61,9 @@ def _process_videos(
     nothing committed or pushed yet. The caller must call
     publisher.push_all() once after this returns and call
     state.mark_processed() for the returned videos ONLY if that push
-    succeeds; staging alone must never mark a video processed. Returns
+    succeeds; staging alone must never mark a video processed. In a dry
+    run, publisher may still be given (a read-only clone, used only for
+    internal-link candidates) but is never staged into. Returns
     (processed_any_immediately, staged_videos)."""
     processed_any = False
     staged_videos: list[VideoMetadata] = []
@@ -66,16 +77,39 @@ def _process_videos(
             continue
 
         try:
-            article = provider.generate_article(video, config.site_profile)
+            corpus = publisher.existing_articles() if publisher is not None else []
+            candidates = select_link_candidates(video, corpus, config.site_profile)
+            article = provider.generate_article(
+                video, config.site_profile, related_payload(candidates)
+            )
+            body, linked_slugs = sanitize_internal_links(
+                article.body, candidates, config.site_profile
+            )
+            article = dataclasses.replace(article, body=body)
+            logger.info(
+                "Video %s: %d internal link(s) kept of %d candidate(s) offered: %s",
+                video.video_id,
+                len(linked_slugs),
+                len(candidates),
+                linked_slugs,
+            )
 
             if dry_run:
                 logger.info(
-                    "[dry-run] Would publish video %s (%s) [category=%s tags=%s]\n%s",
+                    "[dry-run] Would publish video %s (%s) [category=%s tags=%s]\n%s\n"
+                    "seoTitle=%r\nmetaDescription=%r\nkeyTakeaways=%s\nfaq=%s\nentities=%s\n"
+                    "--- body ---\n%s",
                     video.video_id,
                     video.title,
                     article.category,
                     article.tags,
                     article.summary,
+                    article.seo_title,
+                    article.meta_description,
+                    article.key_takeaways,
+                    article.faq,
+                    article.entities,
+                    article.body,
                 )
                 continue
 
@@ -123,9 +157,23 @@ def run(config: Config, *, dry_run: bool) -> int:
     provider = get_provider(config)
 
     if dry_run:
-        # Dry runs never clone/push/save state -- see app/publish and
-        # app/state.py. Processed entirely without a SitePublisher.
-        _process_videos(to_process, provider, config, state, publisher=None, dry_run=True)
+        # Dry runs never stage/push/save state. With a PAT they still clone
+        # (read-only) so link candidates match what a real run would offer;
+        # a clone failure only costs the links, not the dry run.
+        with ExitStack() as stack:
+            publisher = None
+            if config.site_repo_pat:
+                try:
+                    publisher = stack.enter_context(
+                        SitePublisher(config.site_profile, config.site_repo_pat)
+                    )
+                except PublishError as exc:
+                    logger.warning(
+                        "[dry-run] Could not clone site repo, continuing without "
+                        "internal-link candidates: %s",
+                        exc,
+                    )
+            _process_videos(to_process, provider, config, state, publisher, dry_run=True)
         return 0
 
     try:

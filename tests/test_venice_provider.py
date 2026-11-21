@@ -88,6 +88,18 @@ def test_generate_article_prompt_includes_site_categories(sample_video, sample_s
         assert category in sent_content
 
 
+def test_generate_article_prompt_includes_related_articles(sample_video, sample_site_profile):
+    session = FakeSession(response=_success_response())
+    related = [{"slug": "uniswap-v4", "title": "Uniswap V4", "summary": "About v4."}]
+
+    with patch("app.summarize.venice.get_transcript", return_value="transcript"):
+        provider = VeniceProvider(api_key="fake-key", model="some-model", session=session)
+        provider.generate_article(sample_video, sample_site_profile, related)
+
+    sent_content = session.calls[0]["json"]["messages"][0]["content"]
+    assert '"slug": "uniswap-v4"' in sent_content
+
+
 def test_generate_article_wraps_transcript_error(sample_video, sample_site_profile):
     with patch("app.summarize.venice.get_transcript", side_effect=TranscriptError("blocked")):
         provider = VeniceProvider(api_key="fake-key", model="some-model", session=FakeSession())

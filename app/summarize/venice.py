@@ -50,7 +50,12 @@ class VeniceProvider(SummaryProvider):
         self._http = session if session is not None else requests
         self._timeout = timeout
 
-    def generate_article(self, video: VideoMetadata, site_profile: SiteProfile) -> ArticleContent:
+    def generate_article(
+        self,
+        video: VideoMetadata,
+        site_profile: SiteProfile,
+        related: list[dict] | None = None,
+    ) -> ArticleContent:
         try:
             transcript = get_transcript(
                 video.video_id,
@@ -66,7 +71,7 @@ class VeniceProvider(SummaryProvider):
         transcript = transcript[: self._max_transcript_chars]
         prompt = (
             f"{PROMPT_PREFIX_TEMPLATE.format(title=video.title)}\n\n"
-            f"{build_json_instructions(site_profile)}\n\n"
+            f"{build_json_instructions(site_profile, related)}\n\n"
             f"Transcript:\n{transcript}"
         )
 

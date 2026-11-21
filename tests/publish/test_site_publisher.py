@@ -261,6 +261,76 @@ def test_push_all_commit_message_lists_all_staged_video_ids_and_titles_when_mult
     assert f"{other_video.video_id}: {OTHER_ARTICLE.title}" in message
 
 
+def _write_existing_article(clone_dir, name, data):
+    articles_dir = os.path.join(clone_dir, "content", "articles")
+    os.makedirs(articles_dir, exist_ok=True)
+    with open(os.path.join(articles_dir, name), "w", encoding="utf-8") as f:
+        f.write(data if isinstance(data, str) else json.dumps(data))
+
+
+def test_existing_articles_reads_corpus_from_clone(sample_site_profile, publisher_patches):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        _write_existing_article(
+            publisher._clone_dir,
+            "2026-01-01-uniswap.json",
+            {"slug": "2026-01-01-uniswap", "title": "Uniswap", "tags": ["uniswap"], "body": "..."},
+        )
+        _write_existing_article(publisher._clone_dir, "broken.json", "{not json")
+        _write_existing_article(publisher._clone_dir, "no-slug.json", {"title": "No slug"})
+        _write_existing_article(publisher._clone_dir, "README.md", "not an article")
+
+        corpus = publisher.existing_articles()
+
+    assert [c["slug"] for c in corpus] == ["2026-01-01-uniswap"]
+    assert corpus[0]["tags"] == ["uniswap"]
+    assert "body" not in corpus[0]
+
+
+def test_existing_articles_empty_when_no_articles_dir(sample_site_profile, publisher_patches):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        assert publisher.existing_articles() == []
+
+
+def test_staged_article_joins_corpus_for_later_videos(
+    sample_video, sample_site_profile, publisher_patches
+):
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        publisher.existing_articles()
+        slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
+        corpus = publisher.existing_articles()
+
+    assert [c["slug"] for c in corpus] == [slug]
+    assert corpus[0]["sourceUrl"] == sample_video.watch_url
+
+
+def test_stage_writes_optional_fields_only_when_present(
+    sample_video, sample_site_profile, publisher_patches
+):
+    rich = dataclasses.replace(
+        SAMPLE_ARTICLE,
+        seo_title="Bitcoin $85K Resistance",
+        key_takeaways=["Bitcoin tested $85,000 resistance three times this week."],
+        faq=[{"question": "Why $85K?", "answer": "It is the prior high."}],
+    )
+
+    with SitePublisher(sample_site_profile, "fake-pat") as publisher:
+        rich_slug = publisher.stage(sample_video, rich)
+        plain_slug = publisher.stage(sample_video, SAMPLE_ARTICLE)
+        articles_dir = os.path.join(publisher._clone_dir, "content", "articles")
+        with open(os.path.join(articles_dir, f"{rich_slug}.json"), encoding="utf-8") as f:
+            rich_data = json.load(f)
+        with open(os.path.join(articles_dir, f"{plain_slug}.json"), encoding="utf-8") as f:
+            plain_data = json.load(f)
+
+    assert rich_data["seoTitle"] == "Bitcoin $85K Resistance"
+    assert rich_data["keyTakeaways"] == rich.key_takeaways
+    assert rich_data["faq"] == rich.faq
+    assert "metaDescription" not in rich_data
+    assert "entities" not in rich_data
+    for key in ("seoTitle", "metaDescription", "keyTakeaways", "faq", "entities"):
+        assert key not in plain_data
+
+
 def test_push_all_wraps_git_ops_error(sample_video, sample_site_profile, publisher_patches):
     other_video = dataclasses.replace(sample_video, video_id="other456")
     publisher_patches["push"].side_effect = GitOpsError("push failed")

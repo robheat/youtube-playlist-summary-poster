@@ -4,8 +4,9 @@ depends on: a failed video never blocks the rest of the batch, a clone
 failure is fatal to the whole run (nothing could have been published) but
 a batch-push failure is not (article generation already happened and
 nothing was actually published either way), dry-run never has side
-effects, unavailable videos are auto-skipped, and multiple videos staged
-in one run are pushed as exactly one commit.
+effects, unavailable videos are auto-skipped, multiple videos staged
+in one run are pushed as exactly one commit, and only offered internal
+links survive into the staged article.
 """
 from __future__ import annotations
 
@@ -53,22 +54,25 @@ def _make_video(video_id, title="Some Title") -> VideoMetadata:
     )
 
 
-def _make_article() -> ArticleContent:
+def _make_article(body="Body") -> ArticleContent:
     return ArticleContent(
-        title="Title", summary="Summary", body="Body", category="general", tags=["tag"]
+        title="Title", summary="Summary", body=body, category="general", tags=["tag"]
     )
 
 
 class FakeProvider:
-    def __init__(self, raises_for=None):
+    def __init__(self, raises_for=None, body="Body"):
         self._raises_for = raises_for or {}
+        self._body = body
         self.calls = []
+        self.related_by_video: dict[str, list[dict] | None] = {}
 
-    def generate_article(self, video, site_profile):
+    def generate_article(self, video, site_profile, related=None):
         self.calls.append(video.video_id)
+        self.related_by_video[video.video_id] = related
         if video.video_id in self._raises_for:
             raise self._raises_for[video.video_id]
-        return _make_article()
+        return _make_article(self._body)
 
 
 class FakePublisher:
@@ -78,14 +82,20 @@ class FakePublisher:
         raise_on_enter=None,
         raise_on_stage_for=None,
         raise_on_push_all=None,
+        corpus=None,
         **kwargs,
     ):
         self._raise_on_enter = raise_on_enter
         self._raise_on_stage_for = raise_on_stage_for or {}
         self._raise_on_push_all = raise_on_push_all
+        self._corpus = corpus or []
         self.staged: list[str] = []
+        self.staged_articles: list[ArticleContent] = []
         self.pushed: list[str] = []
         self.push_all_call_count = 0
+
+    def existing_articles(self):
+        return self._corpus
 
     def __enter__(self):
         if self._raise_on_enter:
@@ -99,6 +109,7 @@ class FakePublisher:
         if video.video_id in self._raise_on_stage_for:
             raise self._raise_on_stage_for[video.video_id]
         self.staged.append(video.video_id)
+        self.staged_articles.append(article)
         return f"slug-{video.video_id}"
 
     def push_all(self):
@@ -278,8 +289,8 @@ def test_max_videos_per_run_caps_batch(tmp_path, sample_site_profile):
     assert provider.calls == ["vid0", "vid1"]
 
 
-def test_dry_run_never_publishes_or_saves_state(tmp_path, sample_site_profile):
-    config = _make_config(tmp_path, sample_site_profile)
+def test_dry_run_without_pat_never_clones_or_saves_state(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile, site_repo_pat=None)
     videos = [_make_video("vid1")]
     provider = FakeProvider()
 
@@ -291,11 +302,99 @@ def test_dry_run_never_publishes_or_saves_state(tmp_path, sample_site_profile):
         run(config, dry_run=True)
 
     fake_publisher_cls.assert_not_called()
+    assert provider.calls == ["vid1"]
     assert not (tmp_path / "processed_videos.json").exists()
 
 
-def test_dry_run_skips_unavailable_video_without_marking_processed(tmp_path, sample_site_profile):
+def test_dry_run_with_pat_clones_for_link_candidates_but_never_stages_or_pushes(
+    tmp_path, sample_site_profile
+):
     config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("vid1", title="Uniswap governance vote explained")]
+    provider = FakeProvider()
+    fake_publisher = FakePublisher(corpus=_filler_corpus() + [UNISWAP_ARTICLE])
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        exit_code = run(config, dry_run=True)
+
+    assert exit_code == 0
+    assert fake_publisher.staged == []
+    assert fake_publisher.push_all_call_count == 0
+    assert [r["slug"] for r in provider.related_by_video["vid1"]] == ["uniswap-fee-switch"]
+    assert not (tmp_path / "processed_videos.json").exists()
+
+
+def test_dry_run_clone_failure_continues_without_links(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("vid1")]
+    provider = FakeProvider()
+    fake_publisher = FakePublisher(raise_on_enter=PublishError("clone failed"))
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        exit_code = run(config, dry_run=True)
+
+    assert exit_code == 0
+    assert provider.calls == ["vid1"]
+    assert provider.related_by_video["vid1"] == []
+
+
+def _corpus_article(slug, tags, title="Unrelated Headline Words"):
+    return {
+        "slug": slug,
+        "title": title,
+        "category": "general",
+        "tags": tags,
+        "summary": "An existing article.",
+        "publishedAt": "2026-01-01T00:00:00Z",
+        "sourceUrl": f"https://example.com/{slug}",
+    }
+
+
+def _filler_corpus(n=200):
+    # Link scoring weights terms by rarity, so a realistic corpus needs
+    # enough unrelated articles for a shared tag to count as rare.
+    return [_corpus_article(f"filler-{i}", [f"filler-tag-{i}"]) for i in range(n)]
+
+
+UNISWAP_ARTICLE = _corpus_article("uniswap-fee-switch", ["uniswap"], title="Uniswap Fee Switch Vote")
+
+
+def test_offered_candidates_reach_provider_and_body_links_are_sanitized(
+    tmp_path, sample_site_profile
+):
+    config = _make_config(tmp_path, sample_site_profile)
+    videos = [_make_video("vid1", title="Uniswap governance vote explained")]
+    body = (
+        "The [Uniswap fee switch](/articles/uniswap-fee-switch) is back.\n\n"
+        "See [this invented piece](/articles/made-up-slug) too."
+    )
+    provider = FakeProvider(body=body)
+    fake_publisher = FakePublisher(corpus=_filler_corpus() + [UNISWAP_ARTICLE])
+
+    with (
+        patch("app.main.fetch_playlist_videos", return_value=videos),
+        patch("app.main.get_provider", return_value=provider),
+        patch("app.main.SitePublisher", return_value=fake_publisher),
+    ):
+        run(config, dry_run=False)
+
+    assert [r["slug"] for r in provider.related_by_video["vid1"]] == ["uniswap-fee-switch"]
+    assert fake_publisher.staged_articles[0].body == (
+        "The [Uniswap fee switch](/articles/uniswap-fee-switch) is back.\n\n"
+        "See this invented piece too."
+    )
+
+
+def test_dry_run_skips_unavailable_video_without_marking_processed(tmp_path, sample_site_profile):
+    config = _make_config(tmp_path, sample_site_profile, site_repo_pat=None)
     videos = [_make_video("private1", title="Private video")]
     provider = FakeProvider()
 
